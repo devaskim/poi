@@ -87,6 +87,16 @@ public final class HSSFFont implements Font {
     public int getIndex() { return index; }
 
     /**
+     * Kept in the patched build for libraries compiled against POI 5, such as the XLS exporter of JasperReports 6.
+     *
+     * @deprecated use {@link #getIndex()}
+     */
+    @Deprecated
+    public int getIndexAsInt() {
+        return index;
+    }
+
+    /**
      * set the font height in unit's of 1/20th of a point.  Maybe you might want to
      * use the setFontHeightInPoints which matches to the familiar 10, 12, 14 etc..
      * @param height height in 1/20ths of a point
