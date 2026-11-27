@@ -211,6 +211,7 @@ public class CellFormat {
         CellFormatPart defaultTextFormat = new CellFormatPart(locale, "@");
         Matcher m = ONE_PART.matcher(format);
         List<CellFormatPart> parts = new ArrayList<>();
+        String lastDesc = "";
 
         try {
             while (m.find()) {
@@ -221,6 +222,7 @@ public class CellFormat {
                     if (valueDesc.endsWith(";"))
                         valueDesc = valueDesc.substring(0, valueDesc.length() - 1);
 
+                    lastDesc = valueDesc;
                     parts.add(new CellFormatPart(locale, valueDesc));
                 } catch (RuntimeException e) {
                     LOG.warn("Invalid format: {}", CellFormatter.quote(m.group()), e);
@@ -236,6 +238,23 @@ public class CellFormat {
                     "to allow handling this format");
         }
 
+        // As in Excel, a last section with a text placeholder (@) is the text section, however few sections
+        // there are: "ID: "@ formats text only, and 0.00;@ is one number section and the text section.
+        CellFormatPart lastTextFormat = null;
+        if (!parts.isEmpty() && parts.size() < 4) {
+            CellFormatPart last = parts.get(parts.size() - 1);
+            // a section of literal text only, such as "ZERO", is a number section
+            if (last != null && last.getCellFormatType() == CellFormatType.TEXT
+                    && hasTextPlaceholder(lastDesc)) {
+                lastTextFormat = last;
+                parts.remove(parts.size() - 1);
+                if (parts.isEmpty()) {
+                    // no number section: numbers are shown as General
+                    parts.add(new CellFormatPart(locale, "General"));
+                }
+            }
+        }
+
         formatPartCount = parts.size();
 
         switch (formatPartCount) {
@@ -243,15 +262,13 @@ public class CellFormat {
             posNumFmt = parts.get(0);
             negNumFmt = null;
             zeroNumFmt = null;
-            // As in Excel, a single section with a text placeholder (@) also formats text
-            textFmt = posNumFmt != null && posNumFmt.getCellFormatType() == CellFormatType.TEXT
-                    ? posNumFmt : defaultTextFormat;
+            textFmt = lastTextFormat != null ? lastTextFormat : defaultTextFormat;
             break;
         case 2:
             posNumFmt = parts.get(0);
             negNumFmt = parts.get(1);
             zeroNumFmt = null;
-            textFmt = defaultTextFormat;
+            textFmt = lastTextFormat != null ? lastTextFormat : defaultTextFormat;
             break;
         case 3:
             posNumFmt = parts.get(0);
@@ -270,6 +287,32 @@ public class CellFormat {
     }
 
     /**
+     * Returns whether a format section has a text placeholder (@) that is not quoted, escaped or in brackets.
+     */
+    private static boolean hasTextPlaceholder(String section) {
+        boolean quoted = false;
+        boolean bracketed = false;
+        for (int i = 0; i < section.length(); i++) {
+            char ch = section.charAt(i);
+            if (quoted) {
+                quoted = ch != '"';
+            } else if (bracketed) {
+                bracketed = ch != ']';
+            } else if (ch == '"') {
+                quoted = true;
+            } else if (ch == '[') {
+                bracketed = true;
+            } else if (ch == '\\' || ch == '_' || ch == '*') {
+                // the next character is a literal, a space of its width or a fill character
+                i++;
+            } else if (ch == '@') {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Returns the result of applying the format to the given value.  If the
      * value is a number (a type of {@link Number} object), the correct number
      * format type is chosen; otherwise it is considered a text object.
@@ -281,6 +324,15 @@ public class CellFormat {
     public CellFormatResult apply(Object value) {
         if (value instanceof Number num) {
             double val = num.doubleValue();
+
+            // check if one of the conditions below would fail with NPE
+            if (val < 0 && (
+                    (formatPartCount == 2 && posNumFmt == null) ||
+                    (formatPartCount > 1 && negNumFmt == null))) {
+                throw new IllegalStateException("Cannot apply format " + format + " on object " + value + " with empty posNumFmt : "
+                    + posNumFmt + " or negNumFmt " + negNumFmt + ", formatPartCount: " + formatPartCount);
+            }
+
             if (val < 0 &&
                     ((formatPartCount == 2
                             && !posNumFmt.hasCondition() && !negNumFmt.hasCondition())
@@ -291,7 +343,12 @@ public class CellFormat {
                 // the default leading minus sign is not also output
                 return negNumFmt.apply(-val);
             } else {
-                return getApplicableFormatPart(val).apply(val);
+                CellFormatPart applicableFormatPart = getApplicableFormatPart(val);
+                if (applicableFormatPart == null) {
+                    throw new IllegalStateException("Cannot apply format " + format + " on object " + value + ", no applicable format part found ("
+                            + "posNumFmt: " + posNumFmt + ", negNumFmt: " + negNumFmt + ", zeroNumFmt: " + zeroNumFmt);
+                }
+                return applicableFormatPart.apply(val);
             }
         } else if (value instanceof java.util.Date d) {
             // Don't know (and can't get) the workbook date windowing (1900 or 1904)
@@ -306,6 +363,10 @@ public class CellFormat {
                 throw new IllegalArgumentException("value " + numericValue + " of date " + value + " is not a valid Excel date");
             }
         } else {
+            if (textFmt == null) {
+                throw new IllegalStateException("Cannot apply format " + format + " on object " + value + " with empty format");
+            }
+
             return textFmt.apply(value);
         }
     }
@@ -439,6 +500,11 @@ public class CellFormat {
 
             double val = num.doubleValue();
 
+            if (posNumFmt == null) {
+                throw new IllegalStateException(
+                        "Cannot apply cell format, check for warning logs during creation of format: " + format);
+            }
+
             if (formatPartCount == 1) {
                 if (!posNumFmt.hasCondition()
                         || (posNumFmt.hasCondition() && posNumFmt.applies(val))) {
@@ -450,23 +516,37 @@ public class CellFormat {
                 if ((!posNumFmt.hasCondition() && val >= 0)
                         || (posNumFmt.hasCondition() && posNumFmt.applies(val))) {
                     return posNumFmt;
-                } else if (!negNumFmt.hasCondition()
-                        || (negNumFmt.hasCondition() && negNumFmt.applies(val))) {
-                    return negNumFmt;
                 } else {
-                    // Return ###...### (255 #s) to match Excel 2007 behaviour
-                    return new CellFormatPart(QUOTE + INVALID_VALUE_FOR_FORMAT + QUOTE);
+                    if (negNumFmt == null) {
+                        throw new IllegalStateException(
+                                "Cannot apply cell format, check for warning logs during creation of format: " + format);
+                    }
+
+                    if (!negNumFmt.hasCondition()
+                            || (negNumFmt.hasCondition() && negNumFmt.applies(val))) {
+                        return negNumFmt;
+                    } else {
+                        // Return ###...### (255 #s) to match Excel 2007 behaviour
+                        return new CellFormatPart(QUOTE + INVALID_VALUE_FOR_FORMAT + QUOTE);
+                    }
                 }
             } else {
                 if ((!posNumFmt.hasCondition() && val > 0)
                         || (posNumFmt.hasCondition() && posNumFmt.applies(val))) {
                     return posNumFmt;
-                } else if ((!negNumFmt.hasCondition() && val < 0)
-                        || (negNumFmt.hasCondition() && negNumFmt.applies(val))) {
-                    return negNumFmt;
-                // Only the first two format parts can have conditions
                 } else {
-                    return zeroNumFmt;
+                    if (negNumFmt == null) {
+                        throw new IllegalStateException(
+                                "Cannot apply cell format, check for warning logs during creation of format: " + format);
+                    }
+
+                    if ((!negNumFmt.hasCondition() && val < 0)
+                            || (negNumFmt.hasCondition() && negNumFmt.applies(val))) {
+                        return negNumFmt;
+                        // Only the first two format parts can have conditions
+                    } else {
+                        return zeroNumFmt;
+                    }
                 }
             }
         } else {

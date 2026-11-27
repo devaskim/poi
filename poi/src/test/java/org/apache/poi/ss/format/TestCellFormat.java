@@ -1350,4 +1350,87 @@ class TestCellFormat {
         assertEquals("August", CellFormat.getInstance("mmmm").apply(AUG_4_2025_22_21_15).text);
         assertEquals("08", CellFormat.getInstance("mm").apply(AUG_4_2025_22_21_15).text);
     }
+
+    /** Hours and minutes are not rounded up when no smaller unit is shown; only the seconds are rounded. */
+    @Test
+    void testElapsedTimeTruncatesHoursAndMinutes() {
+        double oneThirtyFortyFive = (3600 + 30 * 60 + 45) / 86400.0;
+        assertEquals("1:30", CellFormat.getInstance("[h]:mm").apply(oneThirtyFortyFive).text);
+        assertEquals("1", CellFormat.getInstance("[h]").apply(1.6 / 24).text);
+        assertEquals("1", CellFormat.getInstance("[m]").apply(90 / 86400.0).text);
+        assertEquals("90", CellFormat.getInstance("[m]").apply(1.5 / 24).text);
+        assertEquals("2:00", CellFormat.getInstance("[h]:mm").apply(2 / 24.0).text);
+        assertEquals("-1:30", CellFormat.getInstance("[h]:mm").apply(-oneThirtyFortyFive).text);
+        // the same as DataFormatter
+        assertEquals("1:30", new org.apache.poi.ss.usermodel.DataFormatter(Locale.US)
+                .formatRawCellContents(oneThirtyFortyFive, -1, "[h]:mm"));
+    }
+
+    /** Only the "mmmmm" months of a format are shortened, and three or more "m" are a month even next to a time. */
+    @Test
+    void testMonthInitialWithOtherMonths() {
+        assertEquals("A August", CellFormat.getInstance("mmmmm mmmm").apply(AUG_4_2025_22_21_15).text);
+        assertEquals("August A", CellFormat.getInstance("mmmm mmmmm").apply(AUG_4_2025_22_21_15).text);
+        assertEquals("Aug-A-08", CellFormat.getInstance("mmm-mmmmm-mm").apply(AUG_4_2025_22_21_15).text);
+        assertEquals("22:A", CellFormat.getInstance("hh:mmmmm").apply(AUG_4_2025_22_21_15).text);
+        assertEquals("A:15", CellFormat.getInstance("mmmmm:ss").apply(AUG_4_2025_22_21_15).text);
+        assertEquals("22:21 A", CellFormat.getInstance("hh:mm mmmmm").apply(AUG_4_2025_22_21_15).text);
+        assertEquals("A 21:15", CellFormat.getInstance("mmmmm mm:ss").apply(AUG_4_2025_22_21_15).text);
+        // a Date is formatted the same way
+        Date aug4 = DateUtil.getJavaDate(AUG_4_2025_22_21_15, false, LocaleUtil.getUserTimeZone(), true);
+        assertEquals("A August", CellFormat.getInstance("mmmmm mmmm").apply(aug4).text);
+    }
+
+    /** "m" is the minutes only right after the hours or right before the seconds, as in Excel. */
+    @Test
+    void testMonthAfterTime() {
+        assertEquals("22:21 04/08/2025", CellFormat.getInstance("hh:mm dd/mm/yyyy").apply(AUG_4_2025_22_21_15).text);
+        assertEquals("22:21:15 08-04", CellFormat.getInstance("hh:mm:ss mm-dd").apply(AUG_4_2025_22_21_15).text);
+        assertEquals("04/08/2025 22:21", CellFormat.getInstance("dd/mm/yyyy hh:mm").apply(AUG_4_2025_22_21_15).text);
+        assertEquals("08 22:21 08", CellFormat.getInstance("mm hh:mm mm").apply(AUG_4_2025_22_21_15).text);
+        assertEquals("10:21 PM 8", CellFormat.getInstance("h:mm AM/PM m").apply(AUG_4_2025_22_21_15).text);
+    }
+
+    /** A format with only a text section shows numbers as General, as in Excel. */
+    @Test
+    void testSingleTextSectionLeavesNumbersUnchanged() {
+        assertEquals("12.5", CellFormat.getInstance("\"ID: \"@").apply(12.5).text);
+        assertEquals("-12.5", CellFormat.getInstance("\"ID: \"@").apply(-12.5).text);
+        assertEquals("0", CellFormat.getInstance("@@").apply(0.0).text);
+    }
+
+    /** A last section with a text placeholder is the text section, not a number section, as in Excel. */
+    @Test
+    void testLastTextSectionOfTwoOrThree() {
+        CellFormat two = CellFormat.getInstance("0.00;\"t: \"@");
+        assertEquals("1.50", two.apply(1.5).text);
+        assertEquals("-1.50", two.apply(-1.5).text);
+        assertEquals("0.00", two.apply(0.0).text);
+        assertEquals("t: abc", two.apply("abc").text);
+
+        CellFormat three = CellFormat.getInstance("0.0;(0.0);@\" text\"");
+        assertEquals("1.5", three.apply(1.5).text);
+        assertEquals("(1.5)", three.apply(-1.5).text);
+        assertEquals("0.0", three.apply(0.0).text);
+        assertEquals("abc text", three.apply("abc").text);
+
+        CellFormat date = CellFormat.getInstance("yyyy-mm-dd;@");
+        assertEquals("2025-08-04", date.apply(AUG_4_2025_22_21_15).text);
+        assertEquals("abc", date.apply("abc").text);
+    }
+
+    /** A section of literal text only is a number section: it formats numbers and leaves text unchanged. */
+    @Test
+    void testLiteralOnlySectionIsANumberSection() {
+        assertEquals("n/a", CellFormat.getInstance("\"n/a\"").apply(12.5).text);
+        assertEquals("abc", CellFormat.getInstance("\"n/a\"").apply("abc").text);
+        assertEquals("abc", CellFormat.getInstance("\"user@host\"").apply("abc").text);
+        assertEquals("abc", CellFormat.getInstance("\\@").apply("abc").text);
+
+        CellFormat three = CellFormat.getInstance("\"TRUE\";\"FALSE\";\"ZERO\"");
+        assertEquals("TRUE", three.apply(1.0).text);
+        assertEquals("FALSE", three.apply(-1.0).text);
+        assertEquals("ZERO", three.apply(0.0).text);
+        assertEquals("abc", three.apply("abc").text);
+    }
 }

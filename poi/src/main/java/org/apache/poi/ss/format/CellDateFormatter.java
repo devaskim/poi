@@ -20,9 +20,11 @@ import java.text.AttributedCharacterIterator;
 import java.text.CharacterIterator;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.Formatter;
+import java.util.List;
 import java.util.Locale;
 import java.util.regex.Matcher;
 
@@ -37,7 +39,8 @@ public class CellDateFormatter extends CellFormatter {
     private final boolean amPmUpper;
     private final boolean showM;
     private final boolean showAmPm;
-    private final boolean monthInitial;
+    /** For each month in the format, in order, whether it is shown as its first letter only ("mmmmm") */
+    private final boolean[] monthInitials;
     private final DateFormat dateFmt;
     private final String sFmt;
 
@@ -52,10 +55,13 @@ public class CellDateFormatter extends CellFormatter {
         private boolean amPmUpper;
         private boolean showM;
         private boolean showAmPm;
-        private boolean monthInitial;
+        private final List<Boolean> monthInitials = new ArrayList<>();
         private String sFmt;
         private int mStart = -1;
         private int mLen;
+        private boolean mIsMonth;
+        /** whether the last date or time part was the hours, so that a following 'm' is the minutes */
+        private boolean afterHour;
         private int hStart = -1;
         private int hLen;
 
@@ -69,15 +75,21 @@ public class CellDateFormatter extends CellFormatter {
                 case 's':
                 case 'S':
                     if (mStart >= 0) {
-                        for (int i = 0; i < mLen; i++)
-                            desc.setCharAt(mStart + i, 'm');
+                        // 'm' or 'mm' before 's' is minutes, not month
+                        if (mIsMonth) {
+                            for (int i = 0; i < mLen; i++)
+                                desc.setCharAt(mStart + i, 'm');
+                            monthInitials.remove(monthInitials.size() - 1);
+                        }
                         mStart = -1;
                     }
+                    afterHour = false;
                     return part.toLowerCase(Locale.ROOT);
 
                 case 'h':
                 case 'H':
                     mStart = -1;
+                    afterHour = true;
                     hStart = pos;
                     hLen = part.length();
                     return part.toLowerCase(Locale.ROOT);
@@ -85,6 +97,7 @@ public class CellDateFormatter extends CellFormatter {
                 case 'd':
                 case 'D':
                     mStart = -1;
+                    afterHour = false;
                     if (part.length() <= 2)
                         return part.toLowerCase(Locale.ROOT);
                     else
@@ -92,22 +105,30 @@ public class CellDateFormatter extends CellFormatter {
 
                 case 'm':
                 case 'M':
+                    if (part.length() > 2) {
+                        // three or more are always a month name, never minutes
+                        mStart = -1;
+                        afterHour = false;
+                        boolean initial = part.length() == 5;
+                        monthInitials.add(initial);
+                        // "mmmmm" is the month's first letter: format the full name, keep its first letter later
+                        return initial ? "MMMM" : part.toUpperCase(Locale.ROOT);
+                    }
                     mStart = pos;
                     mLen = part.length();
-                    // For 'm' after 'h', output minutes ('m') not month ('M')
-                    if (hStart >= 0)
+                    // For 'm' right after 'h', output minutes ('m') not month ('M').
+                    // Later in the format it is a month again: hh:mm dd/mm/yyyy
+                    mIsMonth = !afterHour;
+                    afterHour = false;
+                    if (!mIsMonth)
                         return part.toLowerCase(Locale.ROOT);
-                    if (part.length() == 5) {
-                        // "mmmmm" is the month's first letter: format the full name, keep its first letter later
-                        monthInitial = true;
-                        mLen = 4;
-                        return "MMMM";
-                    }
+                    monthInitials.add(false);
                     return part.toUpperCase(Locale.ROOT);
 
                 case 'y':
                 case 'Y':
                     mStart = -1;
+                    afterHour = false;
                     // See https://issues.apache.org/bugzilla/show_bug.cgi?id=53369
                     if (part.length() == 1)
                         part = "yy";
@@ -184,7 +205,10 @@ public class CellDateFormatter extends CellFormatter {
         amPmUpper = partHandler.amPmUpper;
         showM = partHandler.showM;
         showAmPm = partHandler.showAmPm;
-        monthInitial = partHandler.monthInitial;
+        monthInitials = new boolean[partHandler.monthInitials.size()];
+        for (int i = 0; i < monthInitials.length; i++) {
+            monthInitials[i] = partHandler.monthInitials.get(i);
+        }
         sFmt = partHandler.sFmt;
         dateFmt = new SimpleDateFormat(descBuf.toString(), locale);
         dateFmt.setTimeZone(LocaleUtil.getUserTimeZone());
@@ -216,6 +240,7 @@ public class CellDateFormatter extends CellFormatter {
         AttributedCharacterIterator it = dateFmt.formatToCharacterIterator(value);
         boolean doneAm = false;
         boolean doneMillis = false;
+        int monthIdx = -1;
 
         for (char ch = it.first();
              ch != CharacterIterator.DONE;
@@ -229,7 +254,7 @@ public class CellDateFormatter extends CellFormatter {
                         if (msecs < 0) {
                             msecs += 1000;
                         }
-                        formatter.format(locale, sFmt, msecs / 1000.0);
+                        formatter.format(locale, sFmt == null ? "%f" : sFmt, msecs / 1000.0);
                     }
                     toAppendTo.delete(pos, pos + 2);
                     doneMillis = true;
@@ -249,9 +274,13 @@ public class CellDateFormatter extends CellFormatter {
                     }
                     doneAm = true;
                 }
-            } else if (monthInitial && it.getAttribute(DateFormat.Field.MONTH) != null
-                    && Character.isLetter(ch)) {
-                if (it.getIndex() == it.getRunStart(DateFormat.Field.MONTH)) {
+            } else if (it.getAttribute(DateFormat.Field.MONTH) != null) {
+                boolean runStart = it.getIndex() == it.getRunStart(DateFormat.Field.MONTH);
+                if (runStart) {
+                    monthIdx++;
+                }
+                // of a month shown as its initial ("mmmmm"), keep the first letter only
+                if (runStart || monthIdx >= monthInitials.length || !monthInitials[monthIdx]) {
                     toAppendTo.append(ch);
                 }
             } else {
