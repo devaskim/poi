@@ -1433,4 +1433,16 @@ class TestCellFormat {
         assertEquals("ZERO", three.apply(0.0).text);
         assertEquals("abc", three.apply("abc").text);
     }
+
+    /** A decimal point before any digit placeholder is still the decimal point, as in Excel. */
+    @Test
+    void testLeadingDecimalPoint() {
+        assertEquals(".50", CellFormat.getInstance(".00").apply(0.5).text);
+        assertEquals("12.50", CellFormat.getInstance(".00").apply(12.5).text);
+        assertEquals("-.50", CellFormat.getInstance(".00").apply(-0.5).text);
+        assertEquals(".00", CellFormat.getInstance(".00").apply(0.0).text);
+        assertEquals(".5", CellFormat.getInstance(".##").apply(0.5).text);
+        assertEquals("25.0%", CellFormat.getInstance(".0%").apply(0.25).text);
+        assertEquals("$.75", CellFormat.getInstance("\"$\".00").apply(0.75).text);
+    }
 }
